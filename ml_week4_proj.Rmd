@@ -1,0 +1,132 @@
+---
+title: "Practical Machine Learning course project"
+author: "Georgi Pamukov"
+date: "16 January 2017"
+output: html_document
+---
+
+
+
+## Executive summary:
+The purpose of this project is to train Machine Learning model that will be capable of recognizing how well people perform particular physical activity (weight lifting). The data used is from accelerometers on the belt, forearm, arm, and dumbell of 6 participants - and the goal is to classify the observation in one of 5 possible categories (1 correct - and 4 common mistakes). 
+ 
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+# Load the necessary gear
+library(dplyr)
+library(caret)
+library(randomForest)
+```
+
+## Getting and cleansing data:
+Read data file and remove irrelevant features - I don't want to include user or time/sequence related identifiers (that will just overfit the model on the particular dataset - and will basically make it unusable for generic cases).
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+setwd('C:\\Users\\georgi.pamukov\\Desktop\\ds\\ml\\ml_proj\\data')
+tr <- read.csv('pml-training.csv', stringsAsFactors=FALSE, strip.white=TRUE)
+tr <- tr %>% select(-X,-user_name,-cvtd_timestamp, -raw_timestamp_part_1, -raw_timestamp_part_2, -new_window, -num_window)
+```
+
+Perform some cleansing and conversion: set '#DIV/0!' values to 0, set '' to na, remove whitespaces, convert to numeric:
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+tr_m <- as.matrix(tr[-153])
+tr_m[tr_m=='#DIV/0!' & !is.na(tr_m)] <- '0'
+tr_m[tr_m=='' & !is.na(tr_m)] <- NA
+tr_m <- apply(tr_m, 2, function(x)gsub('\\s+', '',x))
+tr_m <- apply(tr_m, 2, function(x)as.numeric(x))
+tr <- cbind(data.frame(tr_m), classe=tr$classe)
+tr_m <- NULL
+```
+
+Asses missing values - and get rid of columns that are more than 97% unpopulated (not seeing any pattern in their distribution against outcome - and cannot train robust model from the few records in them):
+
+```{r echo=TRUE, warnings=FALSE}
+data.frame(sapply(tr, function(x) sum(is.na(x))/length(x)))
+tr <- tr[!sapply(tr, function(x) (sum(is.na(x))/length(x)) > 0.97)]
+```
+
+
+## Exploratory analysis:
+
+### SVD analysis
+
+Decompose the set to singular values and plot. As it can be seen on the graph first 6 principal components explains most of the variance in the set. 
+
+```{r echo=TRUE, warnings=FALSE}
+tr_m <- as.matrix(tr[-53]) 
+svdo <- svd(tr_m)
+plot(svdo$d^2/sum(svdo$d^2)*100,ylab="Percent variability explained")
+```
+
+Lets take a look at first right singular vector. As we can see there are clear patterns there - that are driven by just a few of the features. This is true also for the other 5 most influential components (so I'm not going to annoy you showing them all).
+
+```{r echo=TRUE, warnings=FALSE}
+plot(svdo$v[,1])
+```
+
+So lets select from (first 6) singular vectors just the columns that drives the patterns in the set - and continue exploration with them only:
+
+```{r echo=TRUE, warnings=FALSE}
+c1 <- which(abs(svdo$v[,1]) > 0.1)
+c2 <- which(abs(svdo$v[,2]) > 0.1)
+c3 <- which(abs(svdo$v[,3]) > 0.1)
+c4 <- which(abs(svdo$v[,4]) > 0.1)
+c5 <- which(abs(svdo$v[,5]) > 0.1)
+c6 <- which(abs(svdo$v[,6]) > 0.1)
+col_ix <- unique(c(c1, c2, c3, c4, c5, c6))
+tr <- cbind(tr[,col_ix], classe=factor(tr$classe))
+```
+
+### Density plots
+
+Lets check how density plots looks like of the most meaningful features:
+
+```{r echo=TRUE, warnings=FALSE}
+featurePlot(x = tr[-22], 
+            y = tr$classe,
+            plot = "density", 
+            ## make it prettier
+            scales = list(x = list(relation="free"), 
+                          y = list(relation="free")), 
+            adjust = 1.5, 
+            pch = "|", 
+            layout = c(5, 5), 
+            auto.key = list(columns = 5))
+```
+
+Based on density plots looks like there are less useful features than other - for example accel_forearm_z, accel_belt_z etc.
+It is always good idea to fit regression model and perform anova to decide what is meaningful after adjusting for the proper predictors.
+Still this set of features looks meaningful - so I'm not going to reduce it more.
+
+## Pre-processing
+Since there are no missing values I'll just go for centering and scaling. I'm also going to extract sample of the set and train the model on it (unfortunately caret is not really shining with performance...).
+
+```{r echo=TRUE, warnings=FALSE}
+set.seed(333)
+pro <- preProcess(tr[-22], method=c("center", "scale"))
+tr <- cbind(predict(pro, tr[-22]), classe=tr$classe)
+flg_tr <- createDataPartition(tr$classe, p=0.3)[[1]]
+training <- tr[flg_tr,]
+```
+
+## Model Fitting
+Decided to use Random Forest model with 5 fold cross-validation:
+
+```{r echo=TRUE, warnings=FALSE}
+set.seed(333)
+tr_ctrl <- trainControl(method="cv", number=5)
+fit_rf <- train(classe~., data=training, method="rf", trControl=tr_ctrl, allowParallel=TRUE, prox=TRUE)
+```
+
+## Model Accuracy
+
+Lets take a look at model summary - and best model summary:
+```{r echo=TRUE, warnings=FALSE}
+print(fit_rf)
+print(fit_rf$finalModel)
+```
+
+As visible in the summary the expected out-of-sample accuracy of the model is around 96%.
+It also guessed correctly 100% of the test records (which in reality never happens of course).
+Probably not the best performing model out there - but for sure not overfitted too :)
